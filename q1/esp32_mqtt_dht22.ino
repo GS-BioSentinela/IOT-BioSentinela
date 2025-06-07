@@ -30,7 +30,7 @@ const char* mqtt_password = "q1w2e3r4";
 const char* mqtt_topic = "2TDS/esp32/teste";
 
 // Identificadores
-const char* ID = "ID_do_Grupo";
+const char* ID = "BioSentinela";
 const char* moduleID = "Meu_ESP32";
 
 // Objetos

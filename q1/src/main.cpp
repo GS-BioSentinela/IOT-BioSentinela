@@ -1,27 +1,12 @@
 /********************************************************************
- * Projeto: Envio de Dados MQTT com ESP32 - Global Solution 2025
- * Autor: André Tritiack
+ * Projeto: Envio de Dados HTTP com ESP32 - BioSentinela
+ * Autor: Juliana + Adaptado por ChatGPT
  * Placa: DOIT ESP32 DEVKIT V1
- * 
- * Descrição:
- * Este projeto conecta o ESP32 a uma rede Wi-Fi e a um Broker MQTT.
- * A cada 10 segundos, envia uma mensagem JSON contendo:
- * - ID do grupo
- * - ID do módulo
- * - IP local
- * - Dados de temperatura e umidade do sensor DHT22
- * - Valor analógico do potenciômetro (0-4095)
- * 
- * Baseado no repositório original:
- * https://github.com/arnaldojr/iot-esp32-wokwi-vscode
- * Professor Arnaldo Viana - FIAP
+ * Versão: 2.0 - Otimizado para VM
  ********************************************************************/
 
-//----------------------------------------------------------
-// Bibliotecas já disponíveis no ambiente ESP32
-
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
@@ -31,129 +16,74 @@
 
 #define boardLED 2      // LED onboard
 #define DHTPIN 12       // Pino de dados do DHT
-#define DHTTYPE DHT22   // DHT22 (AM2302)
-#define MQ2PIN 34       // Simulação do sensor de gás (ADC)
-#define PIRPIN 13       // Simulação do sensor de movimento (digital)
+#define DHTTYPE DHT22   // Tipo do sensor
+#define MQ2PIN 34       // Pino do MQ2 (gás)
+#define PIRPIN 13       // Pino do PIR (movimento)
 
-// Identificadores
+// Identificadores do projeto
 const char* ID        = "BioSentinela_Grupo4";
 const char* moduleID  = "BioESP32_Node1";
 
-// Wi-Fi (NÃO ALTERAR)
 const char* SSID      = "Wokwi-GUEST";
 const char* PASSWORD  = "";
 
-// MQTT Broker (NÃO ALTERAR)
-const char* BROKER_MQTT  = "172.208.54.189";
-const int   BROKER_PORT  = 1883;
-const char* mqttUser     = "gs2025";
-const char* mqttPassword = "q1w2e3r4";
-
-// Novo tópico MQTT
-#define TOPICO_PUBLISH  "biosentinela/esp32/monitoramento"
+const char* serverUrl = "http://172.208.54.189:1880/biosentinela";  
 
 //----------------------------------------------------------
 // Variáveis globais
 
-WiFiClient espClient;
-PubSubClient MQTT(espClient);
-JsonDocument doc;
-char buffer[256];
 DHT dht(DHTPIN, DHTTYPE);
-
 float temperatura;
 float umidade;
 int mq2Value;
 bool movimentoDetectado;
+DynamicJsonDocument doc(256);
 
 //----------------------------------------------------------
-// Conexão Wi-Fi
+// Conexão Wi-Fi 
 
 void initWiFi() {
+    Serial.println();
+    Serial.print("Conectando ao WiFi: ");
+    Serial.println(SSID);
+
     WiFi.begin(SSID, PASSWORD);
-    Serial.print("Conectando ao Wi-Fi");
-    while (WiFi.status() != WL_CONNECTED) {
+    
+    int tentativas = 0;
+    while (WiFi.status() != WL_CONNECTED && tentativas < 15) {
         delay(1000);
         Serial.print(".");
+        tentativas++;
+        digitalWrite(boardLED, !digitalRead(boardLED)); // Pisca LED durante conexão
     }
-    Serial.println("\nWi-Fi conectado!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("MAC Address: ");
-    Serial.println(WiFi.macAddress());
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi conectado!");
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        Serial.print("MAC: ");
+        Serial.println(WiFi.macAddress());
+        digitalWrite(boardLED, HIGH);
+    } else {
+        Serial.println("\nFalha na conexão WiFi!");
+        digitalWrite(boardLED, LOW);
+    }
 }
 
-void reconectaWiFi() {
+//----------------------------------------------------------
+// Envio HTTP 
+
+void enviaDadosViaHTTP() {
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Reconectando Wi-Fi...");
+        Serial.println("WiFi desconectado. Tentando reconectar...");
         initWiFi();
+        return;
     }
-}
 
-//----------------------------------------------------------
-// Conexão MQTT
-
-void initMQTT() {
-    MQTT.setServer(BROKER_MQTT, BROKER_PORT);
-    while (!MQTT.connected()) {
-        Serial.println("Conectando ao Broker MQTT...");
-        if (MQTT.connect(moduleID, mqttUser, mqttPassword)) {
-            Serial.println("Conectado ao Broker!");
-        } else {
-            Serial.print("Falha na conexão. Estado: ");
-            Serial.println(MQTT.state());
-            delay(2000);
-        }
-    }
-}
-
-void verificaConexoesWiFiEMQTT() {
-    reconectaWiFi();
-    if (!MQTT.connected()) {
-        initMQTT();
-    }
-    MQTT.loop();
-}
-
-//----------------------------------------------------------
-// Envio MQTT
-
-void enviaEstadoOutputMQTT() {
-    MQTT.publish(TOPICO_PUBLISH, buffer);
-    Serial.println("Mensagem publicada com sucesso!");
-}
-
-void piscaLed() {
-    digitalWrite(boardLED, HIGH);
-    delay(300);
-    digitalWrite(boardLED, LOW);
-}
-
-//----------------------------------------------------------
-// Setup
-
-void setup() {
-    Serial.begin(115200);
-    pinMode(boardLED, OUTPUT);
-    pinMode(MQ2PIN, INPUT);
-    pinMode(PIRPIN, INPUT);
-    digitalWrite(boardLED, LOW);
-    dht.begin();
-    initWiFi();
-    initMQTT();
-}
-
-//----------------------------------------------------------
-// Loop principal
-
-void loop() {
-    verificaConexoesWiFiEMQTT();
-
-    temperatura = dht.readTemperature();
-    umidade = dht.readHumidity();
-    mq2Value = analogRead(MQ2PIN);
-    movimentoDetectado = digitalRead(PIRPIN);
-
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(5000);  
     // Prepara JSON
     doc.clear();
     doc["ID"] = ID;
@@ -165,24 +95,89 @@ void loop() {
         doc["Temperatura"] = temperatura;
         doc["Umidade"] = umidade;
     } else {
-        doc["Temperatura"] = "Erro na leitura";
-        doc["Umidade"] = "Erro na leitura";
+        doc["Temperatura"] = "Erro";
+        doc["Umidade"] = "Erro";
     }
 
     doc["GasFumaca"] = mq2Value;
     doc["Movimento"] = movimentoDetectado ? "Detectado" : "Ausente";
 
-    // Lógica de alerta
     bool alerta = (temperatura > 40.0 || mq2Value > 600 || movimentoDetectado);
     doc["Alerta"] = alerta ? "ATIVO" : "Normal";
 
-    // Serializa
-    serializeJson(doc, buffer);
+    String jsonString;
+    serializeJson(doc, jsonString);
 
-    // Exibe no serial e envia
-    Serial.println(buffer);
-    enviaEstadoOutputMQTT();
-    piscaLed();
+    // Debug no Serial
+    Serial.println("\nEnviando dados para:");
+    Serial.println(serverUrl);
+    Serial.println("Conteúdo JSON:");
+    serializeJsonPretty(doc, Serial);
+    Serial.println();
 
-    delay(10000);  // 10 segundos entre envios
+    // Envia requisição
+    int httpCode = http.POST(jsonString);
+
+    // Processa resposta
+    if (httpCode > 0) {
+        Serial.printf("Resposta HTTP: %d\n", httpCode);
+        
+        if (httpCode == HTTP_CODE_OK) {
+            String resposta = http.getString();
+            Serial.println("Resposta do servidor:");
+            Serial.println(resposta);
+        }
+    } else {
+        Serial.printf("Falha no HTTP: %s\n", http.errorToString(httpCode).c_str());
+    }
+
+    http.end();
+    
+    // Feedback visual
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(boardLED, HIGH);
+        delay(100);
+        digitalWrite(boardLED, LOW);
+        delay(100);
+    }
+}
+
+//----------------------------------------------------------
+// Setup
+
+void setup() {
+    Serial.begin(115200);
+    pinMode(boardLED, OUTPUT);
+    pinMode(MQ2PIN, INPUT);
+    pinMode(PIRPIN, INPUT);
+    digitalWrite(boardLED, LOW);
+
+    dht.begin();
+    initWiFi();
+
+    Serial.println("\nSistema BioSentinela Iniciado");
+    Serial.println("----------------------------");
+}
+
+//----------------------------------------------------------
+// Loop principal com temporização precisa
+
+void loop() {
+    static unsigned long ultimoEnvio = 0;
+    const unsigned long intervalo = 10000; // 10 segundos
+
+    // Coleta de dados
+    temperatura = dht.readTemperature();
+    umidade = dht.readHumidity();
+    mq2Value = analogRead(MQ2PIN);
+    movimentoDetectado = digitalRead(PIRPIN);
+
+    // Verifica se é hora de enviar
+    if (millis() - ultimoEnvio >= intervalo) {
+        enviaDadosViaHTTP();
+        ultimoEnvio = millis();
+    }
+
+    // Pequena pausa para estabilidade
+    delay(100);
 }
